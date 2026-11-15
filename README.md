@@ -320,7 +320,8 @@ src/
 │  └─ not-found.tsx · sitemap.ts · robots.ts · icon.png · apple-icon.png · layout.tsx · globals.css
 ├─ components/
 │  ├─ layout/    Navbar, MegaMenu, MobileMenu, SearchOverlay, CartDrawer, AnnouncementBar, Footer,
-│  │             Wordmark, SmoothScroll, Providers
+│  │             Wordmark, SmoothScroll, Providers, SiteFrame (hides the header, footer and
+│  │             announcement bar on /pay so the customer sees only the payment)
 │  ├─ ui/        Panel, Label/Tag, Button, ArrowLink, Rule, HairlineGrid, SectionHead, PageHeader,
 │  │             RevealText, RevealImage, ScrollFillText, FadeIn, ParallaxImage, Marquee, Accordion,
 │  │             Stars, QuantityStepper, Toast, StickyPanel, Loader

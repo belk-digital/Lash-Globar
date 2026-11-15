@@ -5,6 +5,7 @@ import { CartDrawer } from '@/components/layout/CartDrawer';
 import { Footer } from '@/components/layout/Footer';
 import { Navbar } from '@/components/layout/Navbar';
 import { Providers } from '@/components/layout/Providers';
+import { SiteFrame } from '@/components/layout/SiteFrame';
 import { SmoothScroll } from '@/components/layout/SmoothScroll';
 import { IMAGES } from '@/lib/images';
 import { SITE_DESCRIPTION, SITE_NAME, SITE_TAGLINE, SITE_URL } from '@/lib/site';
@@ -88,18 +89,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             Skip to content
           </a>
 
-          <AnnouncementBar />
-
-          {/* The canvas. Everything below is a panel inset by --frame, separated by the same gap. */}
-          <div className="mx-auto w-full max-w-frame p-frame">
-            <Navbar />
-            <main id="main" tabIndex={-1} className="pt-frame outline-none">
-              {children}
-            </main>
-            <Footer />
-          </div>
-
-          <CartDrawer />
+          <SiteFrame
+            announcement={<AnnouncementBar />}
+            navbar={<Navbar />}
+            footer={<Footer />}
+            drawer={<CartDrawer />}
+          >
+            {children}
+          </SiteFrame>
         </Providers>
 
         <script
