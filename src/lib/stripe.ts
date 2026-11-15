@@ -6,10 +6,14 @@ import Stripe from 'stripe';
 
 const PLACEHOLDER = /x{3,}/i; // matches the `sk_test_xxx` values in .env.example
 
-/** True only when a real-looking secret key is present (not the .env.example placeholder). */
+/**
+ * True only when a real-looking secret key is present (not the .env.example placeholder).
+ * Both a standard secret key (`sk_…`) and a restricted key (`rk_…`) are accepted. A restricted key with the
+ * single "PaymentIntents: Write" permission is all this site needs, so it is the safer choice in live mode.
+ */
 export function isStripeConfigured(): boolean {
   const key = process.env.STRIPE_SECRET_KEY;
-  return Boolean(key) && key!.startsWith('sk_') && !PLACEHOLDER.test(key!);
+  return Boolean(key) && /^(sk|rk)_/.test(key!) && !PLACEHOLDER.test(key!);
 }
 
 let client: Stripe | null = null;

@@ -83,16 +83,16 @@ scroll-scrubbed text. To switch Lenis off: `NEXT_PUBLIC_SMOOTH_SCROLL=false`, or
 
 ## Environment variables
 
-| Variable                             | Purpose                                                                                           |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| `NEXT_PUBLIC_SITE_URL`               | Absolute origin: metadata, sitemap, JSON-LD (set it to this site's real address before deploying) |
-| `STRIPE_SECRET_KEY`                  | Server-only Stripe key (`sk_test_…`)                                                              |
-| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | **Required.** Publishable key (`pk_test_…`): it powers the card form embedded in the site         |
-| `STRIPE_WEBHOOK_SECRET`              | Signing secret from `stripe listen` / the Stripe dashboard (`whsec_…`)                            |
-| `WOO_BRIDGE_SECRET` _(opt.)_         | 32+ character shared secret for the WooCommerce bridge (must match the WordPress plugin)          |
-| `WOO_SITE_URL` _(opt.)_              | The WooCommerce site, `https://` only (`http://localhost` allowed in dev). Enables the bridge     |
-| `NEXT_PUBLIC_CONTACT_EMAIL` _(opt.)_ | Inbox the `/contact` form opens a `mailto:` to (default `hello@lashglobar.com`)                   |
-| `NEXT_PUBLIC_SMOOTH_SCROLL` _(opt.)_ | `false` disables Lenis smooth scrolling site-wide                                                 |
+| Variable                             | Purpose                                                                                               |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_SITE_URL`               | Absolute origin: metadata, sitemap, JSON-LD (set it to this site's real address before deploying)     |
+| `STRIPE_SECRET_KEY`                  | Server-only Stripe key: `sk_test_…`, or in live mode a restricted `rk_live_…` (PaymentIntents: Write) |
+| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | **Required.** Publishable key (`pk_test_…`): it powers the card form embedded in the site             |
+| `STRIPE_WEBHOOK_SECRET`              | Signing secret from `stripe listen` / the Stripe dashboard (`whsec_…`)                                |
+| `WOO_BRIDGE_SECRET` _(opt.)_         | 32+ character shared secret for the WooCommerce bridge (must match the WordPress plugin)              |
+| `WOO_SITE_URL` _(opt.)_              | The WooCommerce site, `https://` only (`http://localhost` allowed in dev). Enables the bridge         |
+| `NEXT_PUBLIC_CONTACT_EMAIL` _(opt.)_ | Inbox the `/contact` form opens a `mailto:` to (default `hello@lashglobar.com`)                       |
+| `NEXT_PUBLIC_SMOOTH_SCROLL` _(opt.)_ | `false` disables Lenis smooth scrolling site-wide                                                     |
 
 > **`NEXT_PUBLIC_*` values are inlined at build time.** Set `NEXT_PUBLIC_SITE_URL` and
 > `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` _before_ `npm run build` / deploying (and redeploy after changing them).
