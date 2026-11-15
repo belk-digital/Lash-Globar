@@ -104,10 +104,14 @@ export function verifySignedRequest(
   return safeEqualHex(hmacHex(secret, `${timestamp}.${rawBody}`), signature);
 }
 
-/** WooCommerce order IDs are numeric, but accept simple alphanumeric references too. */
+/**
+ * WooCommerce order IDs are positive whole numbers, and the WordPress plugin only accepts digits, so
+ * this site accepts exactly that (anything else could create a payment page that can never be confirmed).
+ */
 export function parseOrderId(value: unknown): string | null {
-  const text = typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : value;
-  return typeof text === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(text) ? text : null;
+  const text =
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? String(value) : value;
+  return typeof text === 'string' && /^[0-9]{1,20}$/.test(text) ? text : null;
 }
 
 export type WooConfirmation = {

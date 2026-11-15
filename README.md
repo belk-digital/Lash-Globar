@@ -199,6 +199,12 @@ Every hop between the two servers is signed with HMAC-SHA256 using a shared secr
 - If WordPress is unreachable when a payment completes, the webhook returns 500 and Stripe retries for days. `/woo/return` also
   sends the confirmation when the customer comes back, so whichever arrives first wins.
 - A cancelled return carries **no** order number, so it can't be used to look up someone's order.
+- If a customer pays **twice** for one order (for example from two open payment pages after the total was edited), WooCommerce
+  keeps the first payment and adds one order note: "A second card payment (...) was received ... Refund the extra payment in the
+  Stripe Dashboard." Look for that note.
+- Stripe's **Adaptive Pricing** (Dashboard, Settings, Payments, Adaptive pricing) shows visitors outside the US their local currency
+  with a conversion fee. The order is still charged and confirmed as the USD total. Turn it off in Stripe if you want every
+  customer to see dollars only.
 - USD only. Refunds are not synced (refund in Stripe, then record it in WooCommerce).
 - Metadata `woo_order_id` is the WooCommerce order **ID**; it equals the order number unless a sequential-order-number plugin is added.
 

@@ -102,7 +102,39 @@ final class LGPB_Rest {
 	}
 
 	private static function mark_paid( $order, $data ) {
+		$reference = isset( $data['payment_intent'] ) ? sanitize_text_field( (string) $data['payment_intent'] ) : '';
+		$recorded  = (string) $order->get_transaction_id();
+
+		// The very same payment delivered again (the webhook and the customer's return both send it,
+		// and Stripe retries): always harmless, whatever the order's status is now.
+		if ( '' !== $reference && $reference === $recorded ) {
+			return self::reply( array( 'status' => 'already_paid' ) );
+		}
+
 		if ( $order->is_paid() ) {
+			// A DIFFERENT payment for an order that is already paid means the customer paid twice (for
+			// example from two open payment pages). WooCommerce keeps the first payment; flag the extra
+			// one so it is refunded instead of silently ignored. Noted once per payment.
+			if ( '' !== $reference && '' !== $recorded ) {
+				$seen = $order->get_meta( '_lgpb_extra_payments', true );
+				$seen = is_array( $seen ) ? $seen : array();
+				if ( ! in_array( $reference, $seen, true ) ) {
+					$seen[] = $reference;
+					$order->update_meta_data( '_lgpb_extra_payments', $seen );
+					$order->add_order_note(
+						sprintf(
+							/* translators: 1: extra payment reference, 2: amount, 3: the reference already recorded */
+							__( 'A second card payment (%1$s, %2$s) was received for this order, which was already paid (%3$s). Refund the extra payment in the Stripe Dashboard.', 'lg-payment-bridge' ),
+							$reference,
+							isset( $data['amount'] ) ? number_format( (int) $data['amount'] / 100, 2 ) . ' ' . strtoupper( (string) ( $data['currency'] ?? '' ) ) : '?',
+							$recorded
+						)
+					);
+					$order->save();
+					LGPB_Gateway::log( sprintf( 'Order %d: a second payment (%s) arrived for an already paid order. Refund it in Stripe.', $order->get_id(), $reference ), 'error' );
+				}
+				return self::reply( array( 'status' => 'duplicate_payment' ) );
+			}
 			return self::reply( array( 'status' => 'already_paid' ) );
 		}
 
@@ -125,8 +157,6 @@ final class LGPB_Rest {
 			LGPB_Gateway::log( sprintf( 'Order %d: amount mismatch (paid %d, expected %d). Order put on hold.', $order->get_id(), $paid_cents, $expected_cents ), 'error' );
 			return self::reply( array( 'status' => 'mismatch' ) );
 		}
-
-		$reference = isset( $data['payment_intent'] ) ? sanitize_text_field( (string) $data['payment_intent'] ) : '';
 
 		// Standard WooCommerce completion: sets the status, reduces stock, and fires the usual
 		// hooks, so emails, invoices, affiliate tracking and the thank-you page all behave normally.

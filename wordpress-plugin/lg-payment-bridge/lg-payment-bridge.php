@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Card Payment Bridge for WooCommerce
  * Description:       Adds a card payment method. The customer pays on a secure, separately hosted payment page, and the result is confirmed back to WooCommerce with a signed message.
- * Version:           1.1.0
+ * Version:           1.1.1
  * Requires at least: 6.2
  * Requires PHP:      7.4
  * Requires Plugins:  woocommerce
@@ -15,7 +15,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'LGPB_VERSION', '1.1.0' );
+define( 'LGPB_VERSION', '1.1.1' );
 define( 'LGPB_FILE', __FILE__ );
 define( 'LGPB_DIR', plugin_dir_path( __FILE__ ) );
 define( 'LGPB_URL', plugin_dir_url( __FILE__ ) );

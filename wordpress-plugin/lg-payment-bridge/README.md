@@ -52,6 +52,9 @@ not see it, and WooCommerce also refuses it if someone tries to submit it anyway
 - Marks an order paid **only** from a correctly signed confirmation, only for orders placed with this
   payment method, and only if the paid amount and currency equal the order total (otherwise the order
   goes **On hold** with a note). Repeated confirmations are harmless.
+- If a customer pays **twice** for the same order (for example from two open payment pages), the first
+  payment completes the order and the plugin adds one order note, "A second card payment (...) was
+  received ... Refund the extra payment in the Stripe Dashboard." Search your orders for that note.
 - The customer's return trip (`/?wc-api=lgpb_return`) is also signed. It only chooses which page to
   show: the normal _Order received_ page, or back to checkout if they cancelled. It never completes an
   order by itself.
