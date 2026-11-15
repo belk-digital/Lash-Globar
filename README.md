@@ -1,7 +1,7 @@
 # Lash Globar
 
 A premium lash & lash-extension storefront.
-Next.js 16 (App Router) · TypeScript · Tailwind CSS 3 · Framer Motion · Lenis · Zustand · Stripe Checkout.
+Next.js 16 (App Router) · TypeScript · Tailwind CSS 3 · Framer Motion · Lenis · Zustand · Stripe (card form embedded in the site).
 
 No database: the catalog lives in [`src/lib/products.ts`](src/lib/products.ts), journal articles in
 [`src/lib/articles.ts`](src/lib/articles.ts), and the cart in the browser (Zustand + `localStorage`).
@@ -83,88 +83,100 @@ scroll-scrubbed text. To switch Lenis off: `NEXT_PUBLIC_SMOOTH_SCROLL=false`, or
 
 ## Environment variables
 
-| Variable                             | Purpose                                                                                       |
-| ------------------------------------ | --------------------------------------------------------------------------------------------- |
-| `NEXT_PUBLIC_SITE_URL`               | Absolute origin — used for metadata, sitemap, JSON-LD, and Stripe success/cancel/image URLs   |
-| `STRIPE_SECRET_KEY`                  | Server-only Stripe key (`sk_test_…`)                                                          |
-| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | Publishable key. Not used yet — hosted Checkout redirects, so no Stripe.js is needed          |
-| `STRIPE_WEBHOOK_SECRET`              | Signing secret from `stripe listen` / the Stripe dashboard (`whsec_…`)                        |
-| `WOO_BRIDGE_SECRET` _(opt.)_         | 32+ character shared secret for the WooCommerce bridge (must match the WordPress plugin)      |
-| `WOO_SITE_URL` _(opt.)_              | The WooCommerce site, `https://` only (`http://localhost` allowed in dev). Enables the bridge |
-| `NEXT_PUBLIC_CONTACT_EMAIL` _(opt.)_ | Inbox the `/contact` form opens a `mailto:` to (default `hello@lashglobar.com`)               |
-| `NEXT_PUBLIC_SMOOTH_SCROLL` _(opt.)_ | `false` disables Lenis smooth scrolling site-wide                                             |
+| Variable                             | Purpose                                                                                           |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_SITE_URL`               | Absolute origin: metadata, sitemap, JSON-LD (set it to this site's real address before deploying) |
+| `STRIPE_SECRET_KEY`                  | Server-only Stripe key (`sk_test_…`)                                                              |
+| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | **Required.** Publishable key (`pk_test_…`): it powers the card form embedded in the site         |
+| `STRIPE_WEBHOOK_SECRET`              | Signing secret from `stripe listen` / the Stripe dashboard (`whsec_…`)                            |
+| `WOO_BRIDGE_SECRET` _(opt.)_         | 32+ character shared secret for the WooCommerce bridge (must match the WordPress plugin)          |
+| `WOO_SITE_URL` _(opt.)_              | The WooCommerce site, `https://` only (`http://localhost` allowed in dev). Enables the bridge     |
+| `NEXT_PUBLIC_CONTACT_EMAIL` _(opt.)_ | Inbox the `/contact` form opens a `mailto:` to (default `hello@lashglobar.com`)                   |
+| `NEXT_PUBLIC_SMOOTH_SCROLL` _(opt.)_ | `false` disables Lenis smooth scrolling site-wide                                                 |
 
-> **`NEXT_PUBLIC_*` values are inlined at build time.** Set `NEXT_PUBLIC_SITE_URL` to your real
-> domain _before_ `npm run build` / deploying, or canonical URLs, the sitemap and Stripe redirect
-> URLs will point at localhost.
+> **`NEXT_PUBLIC_*` values are inlined at build time.** Set `NEXT_PUBLIC_SITE_URL` and
+> `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` _before_ `npm run build` / deploying (and redeploy after changing them).
 >
 > The `…_xxx` placeholder values from `.env.example` are detected as "not configured", so the
 > Stripe routes return a friendly 503 instead of crashing.
 
 ---
 
+## Payments: the card form is on this site
+
+Customers **never leave the site to pay**. Stripe's card form (the Payment Element) is embedded in the
+page: card numbers are typed into Stripe's secure fields, so they never touch our servers, but the page,
+the address and the Pay button are ours. Only card payments are offered (Apple Pay and Google Pay work
+inside the page); Link, Klarna, Cash App and bank redirects are switched off so no payment step can send
+a customer to another site. The only thing outside our control is a bank's own 3-D Secure check on some
+cards, which opens inside the page.
+
+- **This store:** bag → `/checkout` (email, shipping address, card) → `/checkout/success`.
+- **WooCommerce shop (the bridge below):** the shop sends the customer to `/pay/<token>` on this site, which
+  shows only "Order #N" and the total.
+
 ## Stripe setup & testing
 
-1. Create a free Stripe account and switch to **Test mode**. Copy the keys from
-   _Developers → API keys_ into `.env.local` (`STRIPE_SECRET_KEY`, `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`).
+1. Create a Stripe account and switch to **Test mode**. Copy the keys from _Developers → API keys_ into
+   `.env.local` (`STRIPE_SECRET_KEY`, `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`).
 2. Restart `npm run dev` (env files are read at startup).
-3. Add something to the bag → **Checkout** (or **Buy now** on a product page). You're redirected
-   to Stripe-hosted Checkout. Pay with a test card:
+3. Add something to the bag → **Checkout** (or **Buy now** on a product page) → fill in the page → **Pay**.
+   Test cards:
 
    | Card                  | Result                        |
    | --------------------- | ----------------------------- |
    | `4242 4242 4242 4242` | Succeeds                      |
-   | `4000 0025 0000 3155` | Requires 3-D Secure           |
+   | `4000 0027 6000 3184` | Requires 3-D Secure           |
    | `4000 0000 0000 9995` | Declined (insufficient funds) |
+   | `4000 0000 0000 0002` | Declined                      |
 
-   Any future expiry, any CVC, any postcode.
+   Any future expiry, any CVC, any ZIP (US addresses need one).
 
-4. You land on `/checkout/success?session_id=…`, which fetches the order summary from
-   `/api/checkout/session`, shows items + total, and clears the cart. **Cancel** returns to
-   `/checkout/cancel` with the bag intact.
+4. After paying you land on `/checkout/success`, which shows the items and total and clears the bag.
 
-### Webhook (logs completed orders to the console)
+### Webhook (one event: `payment_intent.succeeded`)
+
+In the Stripe Dashboard add an endpoint `https://<this-site>/api/webhooks/stripe` and select the single event
+**`payment_intent.succeeded`**. Locally:
 
 ```bash
-# Install the Stripe CLI, then:
 stripe login
-stripe listen --forward-to localhost:3000/api/webhooks/stripe
+stripe listen --events payment_intent.succeeded --forward-to localhost:3000/api/webhooks/stripe
 ```
 
-The CLI prints a signing secret (`whsec_…`) — put it in `STRIPE_WEBHOOK_SECRET` and restart the
-dev server. Complete a test payment and the terminal running `npm run dev` prints a
-`✨ NEW ORDER` block with the customer, shipping address, line items and totals. You can also
-trigger one with `stripe trigger checkout.session.completed`.
+The CLI prints a signing secret (`whsec_…`): put it in `STRIPE_WEBHOOK_SECRET` and restart. Test mode and live mode
+each have their own endpoint and their own secret.
 
-The handler verifies the signature against the **raw** request body (`runtime = 'nodejs'`),
-and returns 500 on processing errors so Stripe retries. To fulfil orders for real, replace
-`logOrder()` in [`src/app/api/webhooks/stripe/route.ts`](src/app/api/webhooks/stripe/route.ts).
+For this store's own orders the handler prints a `✨ NEW ORDER` block (customer, shipping address, items, totals).
+Replace `logOrder()` in [`src/app/api/webhooks/stripe/route.ts`](src/app/api/webhooks/stripe/route.ts) to fulfil orders for real.
+The handler verifies the signature against the **raw** request body and returns 500 on failures so Stripe retries.
 
 ### How checkout stays safe
 
-`POST /api/checkout` accepts only `{ id, quantity, variant }[]`. Names and prices are looked up
-**server-side** from `products.ts` — a client-supplied price is never read. IDs, quantities
-(1–10), variant options and line count are validated before Stripe is called. Shipping
-(US / CA / GB / AU / IN) is a flat $5.99, free over $60 (`FLAT_SHIPPING_CENTS` in the route and
-`FREE_SHIPPING_THRESHOLD` in `src/lib/site.ts`) — edit both to match your real rates.
+`POST /api/checkout/intent` accepts only `{ id, quantity, variant }[]`. Names and prices are looked up **server-side**
+from `products.ts`: a client-supplied price is never read. IDs, quantities (1–10), variant options and line count are validated
+before Stripe is called. Shipping (US / CA / GB / AU / IN) is a flat $5.99, free over $60 (`FLAT_SHIPPING_CENTS` in
+`src/lib/payments.ts`, `FREE_SHIPPING_THRESHOLD` and `SHIPPING_COUNTRIES` in `src/lib/site.ts`). The thank-you page can only
+read an order with the payment's secret from the return link. `/checkout` and `/pay/*` cannot be shown inside another site's
+frame and are never cached.
 
 ---
 
 ## WooCommerce payment bridge
 
-Lets a WooCommerce store take card payments through **this site's Stripe account**. The customer
-pays on a Stripe-hosted page that shows one line, **Order #<number>**, quantity 1, for the order total.
-Nothing about the products is sent to Stripe.
+Lets a WooCommerce store take card payments through **this site's Stripe account**. The customer pays on a page **on this
+site** that shows only **Order #<number>** and the total, with the card form embedded. Nothing about the products is sent to Stripe.
 
 ```
-WooCommerce checkout ──(1) signed POST──▶  /api/woo/checkout      creates the Stripe payment page
-        ▲                                         │
-        │                                         ▼ (2) customer pays on the Stripe page
+WooCommerce checkout ──(1) signed POST──▶  /api/woo/checkout      creates the payment, returns /pay/<token>
+        │                                         │
+        └──(2) customer is sent to  /pay/<token>  ON THIS SITE, pays in the embedded card form
+                                                  │
 (5) signed redirect                         Stripe ──(3) webhook──▶ /api/webhooks/stripe
-        │                                                              │
-   /woo/return ◀──(4) Stripe sends the customer back                   │ (3b) signed "paid" message
-        │                                                              ▼
-        └──────── also sends the signed "paid" message ───────▶  WooCommerce plugin completes the order
+        ▲                                                              │ (3b) signed "paid" message
+   /woo/return ◀──(4) the card form returns here                       ▼
+        │                                                     WooCommerce plugin completes the order
+        └── also sends the signed "paid" message          and the plugin ALSO asks /api/woo/status itself
 ```
 
 Every hop between the two servers is signed with HMAC-SHA256 using a shared secret and a timestamp
@@ -172,39 +184,46 @@ Every hop between the two servers is signed with HMAC-SHA256 using a shared secr
 
 ### What Stripe sees
 
-- One line item: **`Order #<woo order id>`**, quantity 1, the order total in USD. No product names, SKUs or descriptions.
-- Metadata: **only** `woo_order_id` (on the Checkout Session and on the PaymentIntent).
-- Return links (`success_url` / `cancel_url`) point at **this** site (`/woo/return`); the customer is then redirected on to WordPress.
-- The customer's email is prefilled so their receipt goes to the right address.
+- One payment for the order total in USD, **card only**. No product names, SKUs or descriptions.
+- Metadata: **only** `woo_order_id`.
+- The customer's email, so their receipt goes to the right address.
 - The **card statement descriptor is untouched**: whatever is set in the Stripe dashboard applies.
+
+### Which address the payment page uses
+
+The payment link uses **the same address the plugin called** (the "Payment service address" in the plugin's settings), and the
+plugin refuses any link that points anywhere else. So the payment page is always on the site you configured. Moving from a
+`*.vercel.app` address to your own domain later means: change the plugin's address, change the webhook endpoint URL in Stripe,
+and set `NEXT_PUBLIC_SITE_URL` and redeploy. No code change.
 
 ### Set up
 
 1. In `.env.local` (and your host's environment): `WOO_BRIDGE_SECRET` (`openssl rand -hex 32`) and `WOO_SITE_URL`
    (the WordPress site's exact canonical address, https, no trailing slash). Without them the bridge routes answer 503.
-2. In Stripe, on the **same** webhook endpoint (`/api/webhooks/stripe`) enable:
-   `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.expired`.
+2. In Stripe, add the webhook endpoint (`/api/webhooks/stripe`) with the one event **`payment_intent.succeeded`**.
    Events that carry `woo_order_id` are forwarded to WordPress; this store's own orders are never touched by that path.
 3. Install the WordPress plugin from [`wordpress-plugin/lg-payment-bridge/`](wordpress-plugin/lg-payment-bridge/README.md)
    (zip the folder), set the same secret and this site's address, enable it. **Try it on a staging copy first.**
    To test on the live site, leave **Testing mode** ticked (the default): the method is then shown only to logged-in
    Administrators. Untick it to open it to customers.
 4. If Cloudflare / a security plugin blocks the calls, follow the "If your host or security plugins block it" notes in the plugin README.
+   (Even if inbound calls to WordPress are blocked, orders still complete: see below.)
 
 ### Behaviour worth knowing
 
-- The WooCommerce order is completed **only** by the signed confirmation, never by the customer landing on a URL. The plugin
-  also checks that the order was placed with this payment method and that the paid amount and currency equal the order total
-  (otherwise the order goes **On hold**). Repeated confirmations are harmless.
-- If WordPress is unreachable when a payment completes, the webhook returns 500 and Stripe retries for days. `/woo/return` also
-  sends the confirmation when the customer comes back, so whichever arrives first wins.
+- The WooCommerce order is completed **only** from a signed confirmation, or from the shop's own signed question to
+  `/api/woo/status`, never by the customer landing on a URL. The plugin also checks that the order was placed with this payment
+  method and that the paid amount and currency equal the order total (otherwise the order goes **On hold**). Repeats are harmless.
+- **A blocked call can't strand a paid order.** The payment service normally _tells_ WordPress an order was paid (webhook and
+  return). That message travels into WordPress, where a firewall or security plugin can block it. So the plugin also _asks_ this
+  site (shop to payment service, which isn't blocked): when the customer comes back, every ten minutes for unpaid orders from the
+  last six hours, and on demand from the order screen (_Order actions, Check card payment status_).
+- If WordPress is unreachable when a payment completes, the webhook returns 500 and says why (`wp_status`, visible in Stripe's
+  webhook dashboard), and Stripe retries for days.
 - A cancelled return carries **no** order number, so it can't be used to look up someone's order.
 - If a customer pays **twice** for one order (for example from two open payment pages after the total was edited), WooCommerce
   keeps the first payment and adds one order note: "A second card payment (...) was received ... Refund the extra payment in the
   Stripe Dashboard." Look for that note.
-- Stripe's **Adaptive Pricing** (Dashboard, Settings, Payments, Adaptive pricing) shows visitors outside the US their local currency
-  with a conversion fee. The order is still charged and confirmed as the USD total. Turn it off in Stripe if you want every
-  customer to see dollars only.
 - USD only. Refunds are not synced (refund in Stripe, then record it in WooCommerce).
 - Metadata `woo_order_id` is the WooCommerce order **ID**; it equals the order number unless a sequential-order-number plugin is added.
 
@@ -294,10 +313,10 @@ src/
 │  ├─ template.tsx           # page-enter animation
 │  ├─ shop/                  # /shop and /shop/[category]
 │  ├─ products/[slug]/       # PDP (+ Product JSON-LD)
-│  ├─ cart/ · checkout/{success,cancel}/
+│  ├─ cart/ · checkout/ · checkout/success/   # on-site checkout (embedded card form)
 │  ├─ our-story/ · journal/[slug]/ · faq/ · shipping-returns/ · contact/
-│  ├─ api/checkout/ · api/checkout/session/ · api/webhooks/stripe/ · api/newsletter/
-│  ├─ api/woo/checkout/ · woo/return/     # WooCommerce payment bridge
+│  ├─ api/checkout/{intent,order}/ · api/webhooks/stripe/ · api/newsletter/
+│  ├─ api/woo/{checkout,status}/ · pay/[token]/ · woo/return/     # WooCommerce payment bridge
 │  └─ not-found.tsx · sitemap.ts · robots.ts · icon.png · apple-icon.png · layout.tsx · globals.css
 ├─ components/
 │  ├─ layout/    Navbar, MegaMenu, MobileMenu, SearchOverlay, CartDrawer, AnnouncementBar, Footer,
@@ -306,14 +325,14 @@ src/
 │  │             RevealText, RevealImage, ScrollFillText, FadeIn, ParallaxImage, Marquee, Accordion,
 │  │             Stars, QuantityStepper, Toast, StickyPanel, Loader
 │  ├─ commerce/  ProductCard, ProductGrid, ProductGallery, VariantSelector, AddToBagButton, PurchasePanel,
-│  │             BenefitTable, CartLineItem, OrderSummary, CartView, CheckoutSuccess,
+│  │             BenefitTable, CartLineItem, OrderSummary, CartView, CheckoutView, CheckoutSuccess, PayForm,
 │  │             ShopBrowser, Filters, SortSelect, ShopSkeleton
 │  ├─ sections/  Hero, TickerBand, CategoryIndex, FeaturedProducts, Statement, HowItWorks, CurlGuide,
 │  │             EditorialBand, Reviews, StoryBlock, JournalPreview, NewsletterPanel, NewsletterForm, ContactForm
 │  └─ journal/   ArticleCard, ArticleBody
 ├─ hooks/        use-overlay (focus trap · Esc · scroll lock), use-checkout
 └─ lib/          images.ts (manifest) · products.ts · articles.ts · cart-store.ts · shop-filters.ts
-                 stripe.ts · woo-bridge.ts · checkout-client.ts · site.ts · motion.ts · utils.ts
+                 stripe.ts · stripe-client.ts · payments.ts · woo-bridge.ts · checkout-types.ts · site.ts · motion.ts · utils.ts
 scripts/{crop-images,make-logo-variants}.mjs      assets-source/      public/images/{…,logo/}
 wordpress-plugin/lg-payment-bridge/              # the WooCommerce plugin (not part of the Next.js build)
 ```

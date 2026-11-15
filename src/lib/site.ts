@@ -1,6 +1,13 @@
 /** Site-wide constants: brand, URLs, navigation. Edit copy and links here. */
 
 export const SITE_NAME = 'Lash Globar';
+
+/**
+ * The name shown to customers on the /pay page as how the charge will read on their card statement.
+ * The statement text itself is set in the Stripe Dashboard (Settings → Business → Public details →
+ * Statement descriptor), so keep the two in step.
+ */
+export const STATEMENT_NAME = 'LASHGLOBAR';
 export const SITE_TAGLINE = 'Lashes that linger.';
 export const SITE_DESCRIPTION =
   'Lash Globar makes weightless, reusable strip lashes, clusters and extension trays. Vegan, cruelty-free and designed for everyday wear.';
@@ -16,6 +23,9 @@ export const CONTACT_EMAIL = process.env.NEXT_PUBLIC_CONTACT_EMAIL ?? 'hello@las
 /** Free-shipping threshold in cents (matches the announcement bar copy). */
 export const FREE_SHIPPING_THRESHOLD = 6000;
 
+/** Countries the store ships to (also limits the address form at checkout). */
+export const SHIPPING_COUNTRIES = ['US', 'CA', 'GB', 'AU', 'IN'] as const;
+
 /** Max units of a single product + variant per order (enforced in the cart AND server-side). */
 export const MAX_QTY = 10;
 
@@ -27,6 +37,7 @@ export const ROUTES = {
   story: '/our-story',
   journal: '/journal',
   cart: '/cart',
+  checkout: '/checkout',
   faq: '/faq',
   shipping: '/shipping-returns',
   contact: '/contact',

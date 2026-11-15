@@ -7,33 +7,37 @@ import { Label } from '@/components/ui/Label';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Panel } from '@/components/ui/Panel';
 import { useCartStore } from '@/lib/cart-store';
-import type { CheckoutSessionSummary } from '@/lib/checkout-types';
+import type { CheckoutSummary } from '@/lib/checkout-types';
 import { formatPrice } from '@/lib/utils';
 
-type Result = { kind: 'ok'; session: CheckoutSessionSummary } | { kind: 'error'; message: string };
+type Result = { kind: 'ok'; order: CheckoutSummary } | { kind: 'error'; message: string };
 
 /**
- * Reads ?session_id=, fetches the order summary from /api/checkout/session,
- * shows items + total, and clears the cart once payment is confirmed.
+ * Stripe sends the customer here after paying, with ?payment_intent=...&payment_intent_client_secret=...
+ * We ask our server for the order summary (the secret proves it is their payment), show the items
+ * and total, and empty the bag once the payment is confirmed.
  */
 export function CheckoutSuccess() {
-  const sessionId = useSearchParams().get('session_id');
+  const params = useSearchParams();
+  const paymentIntent = params.get('payment_intent');
+  const secret = params.get('payment_intent_client_secret');
   const clearCart = useCartStore((s) => s.clear);
   const [result, setResult] = useState<Result | null>(null);
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!paymentIntent || !secret) return;
     const controller = new AbortController();
 
     (async () => {
       try {
-        const res = await fetch(
-          `/api/checkout/session?session_id=${encodeURIComponent(sessionId)}`,
-          {
-            signal: controller.signal,
-          },
-        );
-        const data = (await res.json()) as CheckoutSessionSummary | { error: string };
+        const query = new URLSearchParams({
+          payment_intent: paymentIntent,
+          payment_intent_client_secret: secret,
+        });
+        const res = await fetch(`/api/checkout/order?${query.toString()}`, {
+          signal: controller.signal,
+        });
+        const data = (await res.json()) as CheckoutSummary | { error: string };
         if (!res.ok || 'error' in data) {
           setResult({
             kind: 'error',
@@ -41,9 +45,9 @@ export function CheckoutSuccess() {
           });
           return;
         }
-        setResult({ kind: 'ok', session: data });
-        // Payment confirmed → the bag has served its purpose.
-        if (data.paymentStatus === 'paid' || data.status === 'complete') clearCart();
+        setResult({ kind: 'ok', order: data });
+        // Payment received (or on its way): the bag has served its purpose.
+        if (data.state === 'paid' || data.state === 'processing') clearCart();
       } catch (error) {
         if ((error as Error).name === 'AbortError') return;
         setResult({ kind: 'error', message: 'We could not load your order details.' });
@@ -51,10 +55,10 @@ export function CheckoutSuccess() {
     })();
 
     return () => controller.abort();
-  }, [sessionId, clearCart]);
+  }, [paymentIntent, secret, clearCart]);
 
-  // No session id in the URL → nothing to look up (derived, so no state update needed).
-  if (!sessionId) {
+  // No payment reference in the URL → nothing to look up (derived, so no state update needed).
+  if (!paymentIntent || !secret) {
     return (
       <Notice
         title="Order confirmed"
@@ -76,28 +80,51 @@ export function CheckoutSuccess() {
     return (
       <Notice
         title="Thank you, almost there"
-        body={`Your payment may have gone through, but ${result.message.toLowerCase()} Check your email for a Stripe receipt, or contact us and we'll help.`}
+        body={`Your payment may have gone through, but ${result.message.toLowerCase()} Check your email for a receipt, or contact us and we'll help.`}
       />
     );
   }
 
-  const { session } = result;
-  const currency = session.currency?.toUpperCase() ?? 'USD';
+  const { order } = result;
+
+  if (order.state === 'unpaid') {
+    return (
+      <PageHeader
+        eyebrow="Payment"
+        title="Payment not completed"
+        intro="Your card was not charged, and everything you picked is still in your bag. You can try again with the same or a different card."
+      >
+        <div className="flex flex-wrap gap-2">
+          <Button href="/checkout" size="lg">
+            Try again
+          </Button>
+          <Button href="/cart" variant="outline" size="lg">
+            Back to bag
+          </Button>
+        </div>
+      </PageHeader>
+    );
+  }
+
+  const currency = order.currency?.toUpperCase() ?? 'USD';
+  const processing = order.state === 'processing';
 
   return (
     <>
       <PageHeader
-        eyebrow="Order confirmed"
+        eyebrow={processing ? 'Payment processing' : 'Order confirmed'}
         meta={currency}
         title="Thank you"
         intro={
           <>
-            Your order is confirmed.
-            {session.customerEmail ? (
+            {processing
+              ? 'Your payment is being confirmed by your bank. We will email you as soon as it clears.'
+              : 'Your order is confirmed.'}
+            {order.customerEmail ? (
               <>
                 {' '}
                 A receipt is on its way to{' '}
-                <strong className="font-bold text-ink">{session.customerEmail}</strong>.
+                <strong className="font-bold text-ink">{order.customerEmail}</strong>.
               </>
             ) : null}{' '}
             We’ll email tracking as soon as it ships.
@@ -119,7 +146,7 @@ export function CheckoutSuccess() {
           Order summary
         </h2>
         <ul className="mt-6 divide-y divide-line border-y border-ink">
-          {session.items.map((item, i) => (
+          {order.items.map((item, i) => (
             <li
               key={`${item.name}-${i}`}
               className="flex items-baseline justify-between gap-4 py-4"
@@ -132,20 +159,19 @@ export function CheckoutSuccess() {
           ))}
         </ul>
         <dl className="mt-6 max-w-md space-y-2 text-sm lg:ml-auto">
-          {session.amountSubtotal !== null ? (
-            <Row label="Subtotal" value={formatPrice(session.amountSubtotal)} />
+          {order.amountSubtotal !== null ? (
+            <Row label="Subtotal" value={formatPrice(order.amountSubtotal)} />
           ) : null}
-          {session.amountShipping !== null ? (
+          {order.amountShipping !== null ? (
             <Row
               label="Shipping"
-              value={session.amountShipping === 0 ? 'Free' : formatPrice(session.amountShipping)}
+              value={order.amountShipping === 0 ? 'Free' : formatPrice(order.amountShipping)}
             />
           ) : null}
-          {session.amountTax ? <Row label="Tax" value={formatPrice(session.amountTax)} /> : null}
           <div className="flex items-baseline justify-between border-t border-ink pt-4">
             <dt className="label text-ink">Total</dt>
             <dd className="display text-3xl tabular-nums tracking-[-0.02em]">
-              {session.amountTotal !== null ? formatPrice(session.amountTotal) : 'n/a'}
+              {order.amountTotal !== null ? formatPrice(order.amountTotal) : 'n/a'}
             </dd>
           </div>
         </dl>

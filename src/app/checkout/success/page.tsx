@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 
 export default function CheckoutSuccessPage() {
   return (
-    // CheckoutSuccess reads ?session_id= via useSearchParams → needs Suspense.
+    // CheckoutSuccess reads the payment reference from the URL via useSearchParams → needs Suspense.
     <Suspense fallback={<Panel aria-busy="true" className="h-64 animate-pulse bg-mist" />}>
       <CheckoutSuccess />
     </Suspense>

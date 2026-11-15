@@ -1,45 +1,28 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useToast } from '@/components/ui/Toast';
-import { startCheckout, type CheckoutItem } from '@/lib/checkout-client';
+import { usePathname, useRouter } from 'next/navigation';
+import { useCartStore } from '@/lib/cart-store';
+import { ROUTES } from '@/lib/site';
 
 /**
- * Starts Stripe Checkout and surfaces any failure as an error toast
- * (missing keys, network trouble, Stripe errors) - it never throws into the UI.
+ * Takes the customer to the on-site /checkout page, where they pay in the embedded card form.
+ * (The old behaviour, a redirect to a Stripe-hosted page, is gone: payment now happens on this site.)
  */
 export function useCheckout() {
-  const { toast } = useToast();
+  const router = useRouter();
+  const pathname = usePathname();
+  const closeDrawer = useCartStore((s) => s.closeDrawer);
   const [loading, setLoading] = useState(false);
 
-  // Coming back from Stripe via the browser's Back button restores this page from
-  // the back/forward cache with `loading` still true - reset it.
-  useEffect(() => {
-    const onPageShow = (event: PageTransitionEvent) => {
-      if (event.persisted) setLoading(false);
-    };
-    window.addEventListener('pageshow', onPageShow);
-    return () => window.removeEventListener('pageshow', onPageShow);
-  }, []);
+  // Shared components (the cart drawer) stay mounted across pages: clear the spinner once we arrive.
+  useEffect(() => () => setLoading(false), [pathname]);
 
-  const checkout = useCallback(
-    async (items: CheckoutItem[]) => {
-      setLoading(true);
-      try {
-        await startCheckout(items);
-        // Success → the browser is navigating to Stripe; keep the spinner up.
-      } catch (error) {
-        setLoading(false);
-        toast({
-          title: 'Checkout unavailable',
-          description:
-            error instanceof Error ? error.message : 'Something went wrong. Please try again.',
-          variant: 'error',
-        });
-      }
-    },
-    [toast],
-  );
+  const checkout = useCallback(() => {
+    setLoading(true);
+    closeDrawer();
+    router.push(ROUTES.checkout);
+  }, [closeDrawer, router]);
 
   return { checkout, loading };
 }

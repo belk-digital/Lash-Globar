@@ -250,11 +250,41 @@ class LGPB_Gateway extends WC_Payment_Gateway {
 		$url  = is_array( $data ) && ! empty( $data['url'] ) ? (string) $data['url'] : '';
 
 		$parts = $url ? wp_parse_url( $url ) : false;
-		if ( 200 !== $code || ! $parts || 'https' !== ( $parts['scheme'] ?? '' ) || empty( $parts['host'] ) ) {
+		// https only. (The filter exists for local development with an http test server; do not use it live.)
+		$allowed_schemes = apply_filters( 'lgpb_require_https', true ) ? array( 'https' ) : array( 'http', 'https' );
+		if ( 200 !== $code || ! $parts || ! in_array( $parts['scheme'] ?? '', $allowed_schemes, true ) || empty( $parts['host'] ) ) {
 			$reason = is_array( $data ) && ! empty( $data['error'] ) ? (string) $data['error'] : 'no payment link returned';
 			self::log( sprintf( 'Order %d: payment service answered HTTP %d (%s).', $order->get_id(), $code, $reason ), 'error' );
 			wc_add_notice( $generic_error, 'error' );
 			return array( 'result' => 'failure' );
+		}
+
+		// Customers are only ever sent to a payment page ON THE PAYMENT SERVICE'S OWN ADDRESS (the one
+		// set as "Payment service address"), never anywhere else, whatever the answer says.
+		$bridge_parts = wp_parse_url( $bridge );
+		$same_site    = ! empty( $bridge_parts['host'] )
+			&& strtolower( $parts['host'] ) === strtolower( $bridge_parts['host'] )
+			&& ( $parts['port'] ?? null ) === ( $bridge_parts['port'] ?? null )
+			&& 0 === strpos( (string) ( $parts['path'] ?? '' ), '/pay/' );
+		if ( ! $same_site ) {
+			self::log(
+				sprintf(
+					'Order %d: refused the payment link because it points to %s, not to the payment service address %s.',
+					$order->get_id(),
+					$parts['host'],
+					$bridge_parts['host'] ?? '?'
+				),
+				'error'
+			);
+			wc_add_notice( $generic_error, 'error' );
+			return array( 'result' => 'failure' );
+		}
+
+		// Remember which payment belongs to this order, so the shop can ask later whether it was paid.
+		$payment = is_array( $data ) && ! empty( $data['payment_intent'] ) ? (string) $data['payment_intent'] : '';
+		if ( preg_match( '/^pi_[A-Za-z0-9]+$/', $payment ) ) {
+			$order->update_meta_data( '_lgpb_payment_intent', $payment );
+			$order->save();
 		}
 
 		self::log( sprintf( 'Order %d: customer sent to the payment page (%d cents).', $order->get_id(), $amount ) );

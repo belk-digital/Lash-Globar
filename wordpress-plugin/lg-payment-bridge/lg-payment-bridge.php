@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Card Payment Bridge for WooCommerce
  * Description:       Adds a card payment method. The customer pays on a secure, separately hosted payment page, and the result is confirmed back to WooCommerce with a signed message.
- * Version:           1.1.1
+ * Version:           1.2.0
  * Requires at least: 6.2
  * Requires PHP:      7.4
  * Requires Plugins:  woocommerce
@@ -15,7 +15,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'LGPB_VERSION', '1.1.1' );
+define( 'LGPB_VERSION', '1.2.0' );
 define( 'LGPB_FILE', __FILE__ );
 define( 'LGPB_DIR', plugin_dir_path( __FILE__ ) );
 define( 'LGPB_URL', plugin_dir_url( __FILE__ ) );
@@ -49,6 +49,7 @@ add_action(
 		require_once LGPB_DIR . 'includes/class-lgpb-gateway.php';
 		require_once LGPB_DIR . 'includes/class-lgpb-rest.php';
 		require_once LGPB_DIR . 'includes/class-lgpb-return.php';
+		require_once LGPB_DIR . 'includes/class-lgpb-verify.php';
 
 		add_filter(
 			'woocommerce_payment_gateways',
@@ -60,8 +61,17 @@ add_action(
 
 		LGPB_Rest::init();
 		LGPB_Return::init();
+		LGPB_Verify::init();
 	},
 	11
+);
+
+/** Stop the ten-minute payment check when the plugin is deactivated. */
+register_deactivation_hook(
+	__FILE__,
+	static function () {
+		wp_clear_scheduled_hook( 'lgpb_recheck_pending' );
+	}
 );
 
 /** Block-based checkout support. Registered at file load: `woocommerce_blocks_loaded` can fire before `plugins_loaded` ends. */

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { QuantityStepper } from '@/components/ui/QuantityStepper';
 import { useCheckout } from '@/hooks/use-checkout';
+import { useCartStore } from '@/lib/cart-store';
 import { defaultVariant, type Product, type VariantSelection } from '@/lib/products';
 import { AddToBagButton } from './AddToBagButton';
 import { VariantSelector } from './VariantSelector';
@@ -46,7 +47,11 @@ export function PurchasePanel({ product }: { product: Product }) {
         size="lg"
         block
         loading={loading}
-        onClick={() => void checkout([{ id: product.id, quantity, variant }])}
+        onClick={() => {
+          // "Buy now" puts this item in the bag and goes straight to the on-site checkout.
+          useCartStore.getState().add({ id: product.id, quantity, variant });
+          checkout();
+        }}
       >
         Buy now
       </Button>

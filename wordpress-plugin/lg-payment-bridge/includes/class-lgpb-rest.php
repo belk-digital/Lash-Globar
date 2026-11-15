@@ -8,6 +8,9 @@
  * have been placed with THIS payment method, so the endpoint can never complete an order that
  * was paid some other way (Zelle, etc.). Calls are idempotent: repeats never complete an order twice.
  *
+ * The same completion routine (confirm_paid) is used when the shop asks the payment service whether
+ * an order was paid (see LGPB_Verify), so both routes behave identically.
+ *
  * @package LGPB
  */
 
@@ -65,40 +68,78 @@ final class LGPB_Rest {
 			return self::reply( array( 'error' => 'order_not_found' ), 404 );
 		}
 
-		// Serialise concurrent confirmations for the same order (the webhook and the customer's
-		// return can arrive together). GET_LOCK is released in `finally`.
-		// GET_LOCK returns 1 (got it), 0 (timed out), or NULL (unsupported database): in that rare
-		// last case carry on without the lock; the paid-check below still makes repeats harmless.
-		global $wpdb;
-		$lock_name = 'lgpb_order_' . $order_id;
-		$previous  = $wpdb->suppress_errors( true );
-		$locked    = $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 10)', $lock_name ) );
-		$wpdb->suppress_errors( $previous );
-		if ( null !== $locked && 1 !== (int) $locked ) {
-			return self::reply( array( 'error' => 'busy' ), 503 );
+		switch ( (string) $data['event'] ) {
+			case 'paid':
+				$status = self::confirm_paid( $order_id, $data );
+				if ( 'busy' === $status ) {
+					return self::reply( array( 'error' => 'busy' ), 503 );
+				}
+				if ( 'not_found' === $status ) {
+					return self::reply( array( 'error' => 'order_not_found' ), 404 );
+				}
+				return self::reply( array( 'status' => $status ) );
+			case 'expired':
+				if ( ! $order->is_paid() ) {
+					$order->add_order_note( __( 'The secure payment page expired without a payment.', 'lg-payment-bridge' ) );
+				}
+				return self::reply( array( 'status' => 'noted' ) );
+			default:
+				return self::reply( array( 'error' => 'unknown_event' ), 422 );
 		}
-		$has_lock = null !== $locked;
+	}
+
+	/**
+	 * Completes an order from a payment confirmation. Safe to call repeatedly and concurrently.
+	 *
+	 * @param int   $order_id Order ID.
+	 * @param array $data     { amount (cents), currency, payment_intent }.
+	 * @return string ok | already_paid | duplicate_payment | mismatch | busy | not_found
+	 */
+	public static function confirm_paid( $order_id, $data ) {
+		// Serialise concurrent confirmations for the same order (the webhook, the customer's return and
+		// the shop's own check can arrive in the same instant). The lock is a unique row in the options
+		// table: the INSERT IGNORE pattern WordPress core itself uses, which works the same on every
+		// database. It is released in `finally`.
+		$lock_name = 'lgpb_order_' . (int) $order_id;
+		if ( ! self::acquire_row_lock( $lock_name ) ) {
+			return 'busy';
+		}
 
 		try {
 			// Re-read inside the lock so a confirmation that just finished is seen.
-			$order = wc_get_order( $order_id );
-
-			switch ( (string) $data['event'] ) {
-				case 'paid':
-					return self::mark_paid( $order, $data );
-				case 'expired':
-					if ( ! $order->is_paid() ) {
-						$order->add_order_note( __( 'The secure payment page expired without a payment.', 'lg-payment-bridge' ) );
-					}
-					return self::reply( array( 'status' => 'noted' ) );
-				default:
-					return self::reply( array( 'error' => 'unknown_event' ), 422 );
+			$order = wc_get_order( (int) $order_id );
+			if ( ! $order || 'lgpb' !== $order->get_payment_method() ) {
+				return 'not_found';
 			}
+			return self::mark_paid( $order, $data );
 		} finally {
-			if ( $has_lock ) {
-				$wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name ) );
-			}
+			self::release_row_lock( $lock_name );
 		}
+	}
+
+	/** A mutex built on a unique row (the same INSERT IGNORE pattern WordPress itself uses for its update lock). */
+	private static function acquire_row_lock( $name ) {
+		global $wpdb;
+		$option = $name . '_rowlock';
+		for ( $i = 0; $i < 20; $i++ ) {
+			$got = $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO `$wpdb->options` ( `option_name`, `option_value`, `autoload` ) VALUES (%s, %s, 'no') /* LGPB LOCK */", $option, (string) time() ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			if ( $got ) {
+				return true;
+			}
+			// A lock left behind by a crashed request is taken over after a minute.
+			$taken = (int) $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM `$wpdb->options` WHERE option_name = %s", $option ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			if ( $taken && time() - $taken > 60 ) {
+				$wpdb->delete( $wpdb->options, array( 'option_name' => $option ) );
+				continue;
+			}
+			usleep( 500000 );
+		}
+		return false;
+	}
+
+	private static function release_row_lock( $name ) {
+		global $wpdb;
+		$wpdb->delete( $wpdb->options, array( 'option_name' => $name . '_rowlock' ) );
 	}
 
 	private static function mark_paid( $order, $data ) {
@@ -108,7 +149,7 @@ final class LGPB_Rest {
 		// The very same payment delivered again (the webhook and the customer's return both send it,
 		// and Stripe retries): always harmless, whatever the order's status is now.
 		if ( '' !== $reference && $reference === $recorded ) {
-			return self::reply( array( 'status' => 'already_paid' ) );
+			return 'already_paid';
 		}
 
 		if ( $order->is_paid() ) {
@@ -133,9 +174,9 @@ final class LGPB_Rest {
 					$order->save();
 					LGPB_Gateway::log( sprintf( 'Order %d: a second payment (%s) arrived for an already paid order. Refund it in Stripe.', $order->get_id(), $reference ), 'error' );
 				}
-				return self::reply( array( 'status' => 'duplicate_payment' ) );
+				return 'duplicate_payment';
 			}
-			return self::reply( array( 'status' => 'already_paid' ) );
+			return 'already_paid';
 		}
 
 		$expected_cents = (int) round( (float) $order->get_total() * 100 );
@@ -155,7 +196,7 @@ final class LGPB_Rest {
 				)
 			);
 			LGPB_Gateway::log( sprintf( 'Order %d: amount mismatch (paid %d, expected %d). Order put on hold.', $order->get_id(), $paid_cents, $expected_cents ), 'error' );
-			return self::reply( array( 'status' => 'mismatch' ) );
+			return 'mismatch';
 		}
 
 		// Standard WooCommerce completion: sets the status, reduces stock, and fires the usual
@@ -169,6 +210,6 @@ final class LGPB_Rest {
 		);
 		LGPB_Gateway::log( sprintf( 'Order %d marked as paid.', $order->get_id() ) );
 
-		return self::reply( array( 'status' => 'ok' ) );
+		return 'ok';
 	}
 }

@@ -114,10 +114,60 @@ export function parseOrderId(value: unknown): string | null {
   return typeof text === 'string' && /^[0-9]{1,20}$/.test(text) ? text : null;
 }
 
+/**
+ * The address THIS site was reached on (for example https://lash-globar.vercel.app, later
+ * https://lashglobar.com). The plugin calls the payment service at the address saved in its settings, so
+ * building the payment link from that same address keeps the customer on exactly the site the shop is
+ * set up to use, and moving to a new domain later only means changing the plugin's address.
+ * Safe to trust here because the request has already passed signature verification.
+ */
+export function requestOrigin(request: Request): string | null {
+  const host = (request.headers.get('x-forwarded-host') ?? request.headers.get('host') ?? '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:\d{1,5})?$/.test(host)) return null;
+  const forwardedProto = (request.headers.get('x-forwarded-proto') ?? '').split(',')[0].trim();
+  const isLocal = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
+  // Always https in production; plain http only for localhost while developing.
+  const proto =
+    process.env.NODE_ENV !== 'production' && isLocal && forwardedProto !== 'https'
+      ? 'http'
+      : 'https';
+  return `${proto}://${host}`;
+}
+
+/** A Stripe PaymentIntent id, e.g. pi_3Abc... */
+export const PAYMENT_INTENT_ID = /^pi_[A-Za-z0-9]{10,100}$/;
+/** The secret Stripe puts in the return link: pi_..._secret_... */
+export const PAYMENT_INTENT_SECRET = /^pi_[A-Za-z0-9]{10,100}_secret_[A-Za-z0-9]{10,200}$/;
+
+/** Constant-time string comparison. */
+export function sameText(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+/**
+ * The link the plugin sends the customer to is `<this site>/pay/<token>`. The token is the payment's
+ * id plus a signature, so only links this site issued open a payment page (ids alone can't be guessed
+ * into one).
+ */
+export function createPayToken(secret: string, paymentIntentId: string): string {
+  return `${paymentIntentId}.${hmacHex(secret, `pay.${paymentIntentId}`).slice(0, 32)}`;
+}
+
+/** Returns the payment id when the token is genuine, otherwise `null`. */
+export function parsePayToken(secret: string, token: string): string | null {
+  const [id, sig, ...rest] = token.split('.');
+  if (rest.length > 0 || !id || !sig || !PAYMENT_INTENT_ID.test(id)) return null;
+  return sameText(hmacHex(secret, `pay.${id}`).slice(0, 32), sig.toLowerCase()) ? id : null;
+}
+
 export type WooConfirmation = {
   event: 'paid' | 'expired';
   order_id: string;
-  session_id: string;
   /** Smallest currency unit (cents). */
   amount?: number;
   currency?: string;

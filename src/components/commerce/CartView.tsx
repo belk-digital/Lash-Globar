@@ -84,15 +84,7 @@ export function CartView() {
             className="p-5 sm:p-8 lg:sticky lg:top-[calc(var(--header-h)+var(--frame)*2)]"
           >
             <h2 className="label mb-6 text-ink">Summary</h2>
-            <OrderSummary
-              subtotal={subtotal}
-              loading={loading}
-              onCheckout={() =>
-                void checkout(
-                  lines.map((l) => ({ id: l.id, quantity: l.quantity, variant: l.variant })),
-                )
-              }
-            />
+            <OrderSummary subtotal={subtotal} loading={loading} onCheckout={checkout} />
           </Panel>
         </aside>
       </div>

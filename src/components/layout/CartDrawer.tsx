@@ -133,15 +133,7 @@ export function CartDrawer() {
                 </ul>
 
                 <div className="shrink-0 border-t border-ink bg-mist p-5">
-                  <OrderSummary
-                    subtotal={subtotal}
-                    loading={loading}
-                    onCheckout={() =>
-                      void checkout(
-                        lines.map((l) => ({ id: l.id, quantity: l.quantity, variant: l.variant })),
-                      )
-                    }
-                  />
+                  <OrderSummary subtotal={subtotal} loading={loading} onCheckout={checkout} />
                   <Link
                     href={ROUTES.cart}
                     onClick={close}

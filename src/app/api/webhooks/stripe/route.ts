@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
 import type Stripe from 'stripe';
-import { describeStripeError, getStripe } from '@/lib/stripe';
+import { decodeLines } from '@/lib/payments';
+import { getStripe } from '@/lib/stripe';
 import {
   WOO_NOT_CONFIGURED_MESSAGE,
   getWooConfig,
   notifyWoo,
   parseOrderId,
-  type WooConfirmation,
 } from '@/lib/woo-bridge';
 
 // Signature verification needs Node's crypto and the exact raw request body.
@@ -17,10 +17,12 @@ const PLACEHOLDER = /x{3,}/i; // the `whsec_xxx` value from .env.example
 
 /**
  * POST /api/webhooks/stripe
- * Local testing:  stripe listen --forward-to localhost:3000/api/webhooks/stripe
+ * Local testing:  stripe listen --events payment_intent.succeeded --forward-to localhost:3000/api/webhooks/stripe
  *
- * There's no database, so a completed order is logged to the console. Swap the
- * `logOrder` call for your fulfilment / email / DB logic when you're ready.
+ * Needs ONE event enabled on the Stripe webhook endpoint: `payment_intent.succeeded`.
+ *
+ * There's no database, so a completed store order is logged to the console. Swap the `logOrder` call
+ * for your fulfilment / email / DB logic when you're ready.
  */
 export async function POST(request: Request) {
   const stripe = getStripe();
@@ -49,39 +51,30 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid signature.' }, { status: 400 });
   }
 
-  // Payments that started on the WooCommerce site carry the Woo order number in metadata. They are
-  // forwarded to WordPress and never reach this store's own order logging below.
-  if (
-    event.type === 'checkout.session.completed' ||
-    event.type === 'checkout.session.async_payment_succeeded' ||
-    event.type === 'checkout.session.expired'
-  ) {
-    const wooOrderId = (event.data.object as Stripe.Checkout.Session).metadata?.woo_order_id;
-    if (wooOrderId) return forwardToWoo(event, wooOrderId);
-  }
+  if (event.type === 'payment_intent.succeeded') {
+    const intent = event.data.object as Stripe.PaymentIntent;
 
-  if (event.type === 'checkout.session.completed') {
-    try {
-      const session = event.data.object as Stripe.Checkout.Session;
-      // The event payload omits line items - fetch them for a complete order record.
-      const full = await stripe.checkout.sessions.retrieve(session.id, { expand: ['line_items'] });
-      logOrder(full);
-    } catch (error) {
-      // Return 500 so Stripe retries delivery.
-      console.error('[webhook] Could not load completed session:', describeStripeError(error));
-      return NextResponse.json({ error: 'Failed to process event.' }, { status: 500 });
-    }
+    // A payment that started on the WooCommerce site carries the Woo order number in its metadata.
+    // It is forwarded to WordPress and never reaches this store's own order logging below.
+    const wooOrderId = intent.metadata?.woo_order_id;
+    if (wooOrderId) return forwardToWoo(intent, wooOrderId);
+
+    // This store's own checkout.
+    if (intent.metadata?.kind === 'store') logOrder(intent);
   }
 
   return NextResponse.json({ received: true });
 }
 
 /**
- * Tells the WooCommerce site what happened to one of its orders.
+ * Tells the WooCommerce site that one of its orders was paid.
  * A failed delivery returns 500 so Stripe retries (it keeps trying for days); the confirmation is
  * idempotent on the WooCommerce side, so repeats are harmless.
  */
-async function forwardToWoo(event: Stripe.Event, rawOrderId: string): Promise<NextResponse> {
+async function forwardToWoo(
+  intent: Stripe.PaymentIntent,
+  rawOrderId: string,
+): Promise<NextResponse> {
   const orderId = parseOrderId(rawOrderId);
   const config = getWooConfig();
   if (!orderId || !config) {
@@ -89,56 +82,52 @@ async function forwardToWoo(event: Stripe.Event, rawOrderId: string): Promise<Ne
     return NextResponse.json({ error: WOO_NOT_CONFIGURED_MESSAGE }, { status: 503 });
   }
 
-  const session = event.data.object as Stripe.Checkout.Session;
-
-  let confirmation: WooConfirmation | null = null;
-  if (event.type === 'checkout.session.expired') {
-    confirmation = { event: 'expired', order_id: orderId, session_id: session.id };
-  } else if (session.payment_status === 'paid') {
-    // `completed` for cards, or `async_payment_succeeded` for delayed methods.
-    confirmation = {
-      event: 'paid',
-      order_id: orderId,
-      session_id: session.id,
-      amount: session.amount_total ?? undefined,
-      currency: session.currency ?? undefined,
-      payment_intent:
-        typeof session.payment_intent === 'string' ? session.payment_intent : undefined,
-    };
-  }
-  // `completed` while still unpaid (delayed method): wait for `async_payment_succeeded`.
-  if (!confirmation) return NextResponse.json({ received: true });
-
-  const result = await notifyWoo(config, confirmation);
+  const result = await notifyWoo(config, {
+    event: 'paid',
+    order_id: orderId,
+    amount: intent.amount_received,
+    currency: intent.currency,
+    payment_intent: intent.id,
+  });
   if (result.ok) return NextResponse.json({ received: true });
 
   console.error(
-    `[webhook] WooCommerce rejected the ${confirmation.event} confirmation for order ${orderId} (HTTP ${result.status}): ${result.detail}`,
+    `[webhook] WooCommerce rejected the paid confirmation for order ${orderId} (HTTP ${result.status}): ${result.detail}`,
   );
   // 404/422 mean WooCommerce will never accept it (unknown order, bad data): stop the retries.
   if (result.permanent) return NextResponse.json({ received: true, forwarded: false });
-  return NextResponse.json({ error: 'Could not reach WooCommerce.' }, { status: 500 });
+  // Say WHY in the reply, so it is visible in Stripe's webhook dashboard (no secrets are ever in here):
+  // wp_status 0 = no answer, 3xx = redirected, 401 = secrets differ, 403 = a firewall said no.
+  return NextResponse.json(
+    {
+      error: 'Could not reach WooCommerce.',
+      wp_status: result.status,
+      wp_detail: (result.detail ?? '').replace(/\s+/g, ' ').slice(0, 160),
+    },
+    { status: 500 },
+  );
 }
 
-function logOrder(session: Stripe.Checkout.Session): void {
+function logOrder(intent: Stripe.PaymentIntent): void {
   const money = (cents: number | null | undefined) =>
-    cents == null
-      ? 'n/a'
-      : `${(cents / 100).toFixed(2)} ${(session.currency ?? 'usd').toUpperCase()}`;
-  const shipping = session.collected_information?.shipping_details;
+    cents == null ? 'n/a' : `${(cents / 100).toFixed(2)} ${intent.currency.toUpperCase()}`;
+  const shipping = intent.shipping;
+  const meta = (key: string) => {
+    const n = Number(intent.metadata?.[key]);
+    return Number.isInteger(n) ? n : null;
+  };
 
   console.log('\n✨ NEW ORDER ─────────────────────────────────────────');
-  console.log('Session:  ', session.id);
-  console.log('Payment:  ', session.payment_status);
-  console.log('Customer: ', session.customer_details?.email ?? 'n/a');
+  console.log('Payment:  ', intent.id);
+  console.log('Customer: ', intent.receipt_email ?? 'n/a');
   if (shipping) {
     console.log('Ship to:  ', shipping.name, JSON.stringify(shipping.address));
   }
   console.log('Items:');
-  for (const line of session.line_items?.data ?? []) {
-    console.log(`  • ${line.quantity} × ${line.description}  ·  ${money(line.amount_total)}`);
+  for (const line of decodeLines(intent.metadata)) {
+    console.log(`  • ${line.quantity} × ${line.name}  ·  ${money(line.amount)}`);
   }
-  console.log('Shipping: ', money(session.total_details?.amount_shipping));
-  console.log('Total:    ', money(session.amount_total));
+  console.log('Shipping: ', money(meta('shipping_cents')));
+  console.log('Total:    ', money(intent.amount_received));
   console.log('──────────────────────────────────────────────────────\n');
 }

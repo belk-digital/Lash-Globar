@@ -1,10 +1,13 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import {
+  PAYMENT_INTENT_ID,
+  PAYMENT_INTENT_SECRET,
   WOO_NOT_CONFIGURED_MESSAGE,
   buildReturnRedirect,
   getWooConfig,
   notifyWoo,
   parseOrderId,
+  sameText,
   type WooReturnStatus,
 } from '@/lib/woo-bridge';
 import { describeStripeError, getStripe } from '@/lib/stripe';
@@ -22,15 +25,17 @@ const redirect = (to: string) =>
   NextResponse.redirect(to, { status: 303, headers: { 'cache-control': 'no-store' } });
 
 /**
- * GET /woo/return - where Stripe sends the customer after the payment page.
+ * GET /woo/return - where the customer lands after the payment page on this site.
  *
- *   ?session_id=cs_...   paid (or pending): the real status is read from Stripe, never from the URL
- *   ?status=cancelled    the customer backed out
+ *   ?payment_intent=pi_...&payment_intent_client_secret=...   Stripe's return link after paying.
+ *                                                             The real status is read from Stripe,
+ *                                                             never from the URL.
+ *   ?status=cancelled                                         the customer backed out
  *
  * It makes sure WooCommerce has been told about a paid order (the webhook normally got there first;
- * the confirmation is idempotent), then redirects to the configured WordPress site only. The
- * redirect is signed, so WooCommerce can trust it, and it carries an order number only after Stripe
- * has confirmed that session. A cancelled return carries no order at all.
+ * the confirmation is idempotent), then redirects to the configured WordPress site only. The redirect
+ * is signed, so WooCommerce can trust it, and it carries an order number only after Stripe has
+ * confirmed that payment. A cancelled return carries no order at all.
  */
 export async function GET(request: NextRequest) {
   const config = getWooConfig();
@@ -42,51 +47,61 @@ export async function GET(request: NextRequest) {
     return redirect(buildReturnRedirect(config, 'cancelled', null));
   }
 
-  const sessionId = params.get('session_id');
-  if (!sessionId || !/^cs_[A-Za-z0-9_]{10,200}$/.test(sessionId)) {
+  const paymentId = params.get('payment_intent');
+  const secret = params.get('payment_intent_client_secret');
+  if (
+    !paymentId ||
+    !PAYMENT_INTENT_ID.test(paymentId) ||
+    !secret ||
+    !PAYMENT_INTENT_SECRET.test(secret)
+  ) {
     return text('This payment link is not valid.', 400);
   }
 
   const stripe = getStripe();
   if (!stripe) return text('Payments are not configured.', 503);
 
-  let session;
+  let intent;
   try {
-    session = await stripe.checkout.sessions.retrieve(sessionId);
+    intent = await stripe.paymentIntents.retrieve(paymentId);
   } catch (error) {
-    console.error('[woo-return] Could not load the payment session:', describeStripeError(error));
+    console.error('[woo-return] Could not load the payment:', describeStripeError(error));
     return text(
       'We could not confirm your payment right now. Please check your email or contact us.',
       502,
     );
   }
 
-  const orderId = parseOrderId(session.metadata?.woo_order_id);
+  // The secret in the link proves the visitor is the person who paid; the metadata says which order.
+  if (!intent.client_secret || !sameText(intent.client_secret, secret)) {
+    return text('This payment link is not valid.', 400);
+  }
+  const orderId = parseOrderId(intent.metadata?.woo_order_id);
   if (!orderId) return text('This payment link is not valid.', 400);
 
   let status: WooReturnStatus;
-  if (session.payment_status === 'paid') {
+  if (intent.status === 'succeeded') {
     status = 'paid';
     const result = await notifyWoo(config, {
       event: 'paid',
       order_id: orderId,
-      session_id: session.id,
-      amount: session.amount_total ?? undefined,
-      currency: session.currency ?? undefined,
-      payment_intent:
-        typeof session.payment_intent === 'string' ? session.payment_intent : undefined,
+      amount: intent.amount_received,
+      currency: intent.currency,
+      payment_intent: intent.id,
     });
     if (!result.ok) {
-      // Not fatal for the customer: Stripe's webhook keeps retrying the same confirmation.
+      // Not fatal for the customer: Stripe's webhook retries, and the shop also asks us for the status
+      // when the customer arrives and from the order's "Check card payment status" action.
       console.error(
         `[woo-return] Order ${orderId} paid, but WooCommerce did not accept the confirmation yet (HTTP ${result.status}): ${result.detail}`,
       );
     }
-  } else if (session.status === 'expired') {
-    status = 'cancelled';
-  } else {
-    // Complete but not paid yet (a delayed payment method), or still open.
+  } else if (intent.status === 'processing') {
+    // The bank is still confirming (a delayed payment method).
     status = 'pending';
+  } else {
+    // Not paid: back to checkout, the cart untouched.
+    status = 'cancelled';
   }
 
   return redirect(buildReturnRedirect(config, status, status === 'cancelled' ? null : orderId));

@@ -61,6 +61,14 @@ final class LGPB_Return {
 			exit;
 		}
 
+		// The payment service has confirmed this payment to us. Normally it has also told the shop
+		// directly; if that message was blocked on the way in, the order is still unpaid here, so ask
+		// the payment service ourselves (shop to payment service, which a firewall does not block).
+		if ( in_array( $status, array( 'paid', 'pending' ), true ) && ! $order->is_paid() ) {
+			LGPB_Verify::check( $order );
+			$order = wc_get_order( (int) $order_id );
+		}
+
 		// A paid order: the customer's bag is done with.
 		if ( 'paid' === $status && function_exists( 'WC' ) ) {
 			if ( ! WC()->cart && function_exists( 'wc_load_cart' ) ) {

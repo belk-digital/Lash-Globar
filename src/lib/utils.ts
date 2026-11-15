@@ -14,6 +14,11 @@ export function formatPrice(cents: number): string {
   }).format(dollars);
 }
 
+/** Money to be PAID, always with cents: 2400 → "$24.00" (the shop style above drops ".00"). */
+export function formatMoney(cents: number): string {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
+}
+
 /** Clamp a number into [min, max]. */
 export function clamp(n: number, min: number, max: number): number {
   return Math.min(Math.max(n, min), max);

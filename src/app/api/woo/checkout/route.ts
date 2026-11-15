@@ -1,14 +1,15 @@
 import { createHash } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import type Stripe from 'stripe';
-import { SITE_URL } from '@/lib/site';
 import { STRIPE_NOT_CONFIGURED_MESSAGE, describeStripeError, getStripe } from '@/lib/stripe';
 import {
   WOO_NOT_CONFIGURED_MESSAGE,
   WOO_SIGNATURE_HEADER,
   WOO_TIMESTAMP_HEADER,
+  createPayToken,
   getWooConfig,
   parseOrderId,
+  requestOrigin,
   verifySignedRequest,
 } from '@/lib/woo-bridge';
 
@@ -31,9 +32,10 @@ const fail = (error: string, status: number) =>
  *          = hex HMAC-SHA256(WOO_BRIDGE_SECRET, `${timestamp}.${rawBody}`).
  * Body:    { order_id, amount (cents, integer), currency: "usd", email? }
  *
- * Creates a hosted Stripe payment page with ONE line item ("Order #<id>", quantity 1) for the
- * order total, and returns `{ url }` for the plugin to redirect the customer to. The only
- * metadata stored is the WooCommerce order number. Nothing else about the order is sent.
+ * Creates a Stripe payment for the order total and returns `{ url, payment_intent }`. The URL is a
+ * payment page ON THIS SITE (`/pay/<token>`) that shows only "Order #<id>" and the total, with Stripe's
+ * card form embedded. The only metadata stored on the payment is the WooCommerce order number.
+ * Nothing else about the order (products, SKUs, addresses) is ever sent.
  */
 export async function POST(request: Request) {
   const config = getWooConfig();
@@ -52,6 +54,9 @@ export async function POST(request: Request) {
     rawBody,
   );
   if (!authentic) return fail('Invalid signature.', 401);
+
+  const origin = requestOrigin(request);
+  if (!origin) return fail('Could not tell which address this site was reached on.', 400);
 
   let body: { order_id?: unknown; amount?: unknown; currency?: unknown; email?: unknown };
   try {
@@ -85,37 +90,29 @@ export async function POST(request: Request) {
     email = body.email;
   }
 
-  // The page lives for about an hour. The expiry is rounded to 10-minute buckets so that a
-  // double-clicked "Pay" produces identical parameters and Stripe's idempotency returns the
-  // same session instead of creating a second one.
-  const bucket = Math.floor(Date.now() / 600_000);
-  const params: Stripe.Checkout.SessionCreateParams = {
-    mode: 'payment',
-    line_items: [
-      {
-        quantity: 1,
-        price_data: {
-          currency: 'usd',
-          unit_amount: amount,
-          product_data: { name: `Order #${orderId}` },
-        },
-      },
-    ],
-    customer_email: email,
+  // Identical requests (a double-clicked "Pay", a customer retrying) get the SAME payment back from
+  // Stripe's idempotency, so one order never ends up with several open payments. If the total or
+  // email changes, the parameters differ and a new payment is made.
+  const params: Stripe.PaymentIntentCreateParams = {
+    amount,
+    currency: 'usd',
+    allowed_payment_method_types: ['card'],
+    receipt_email: email,
     metadata: { woo_order_id: orderId },
-    payment_intent_data: { metadata: { woo_order_id: orderId } },
-    expires_at: (bucket + 1) * 600 + 3600,
-    success_url: `${SITE_URL}/woo/return?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${SITE_URL}/woo/return?status=cancelled`,
   };
-  const idempotencyKey = `woo-${createHash('sha256').update(JSON.stringify(params)).digest('hex')}`;
+  const idempotencyKey = `woo-pi-${createHash('sha256').update(JSON.stringify(params)).digest('hex')}`;
 
   try {
-    const session = await stripe.checkout.sessions.create(params, { idempotencyKey });
-    if (!session.url) return fail('Stripe did not return a payment link.', 502);
-    return NextResponse.json({ url: session.url }, { headers: { 'cache-control': 'no-store' } });
+    const intent = await stripe.paymentIntents.create(params, { idempotencyKey });
+    return NextResponse.json(
+      {
+        url: `${origin}/pay/${createPayToken(config.secret, intent.id)}`,
+        payment_intent: intent.id,
+      },
+      { headers: { 'cache-control': 'no-store' } },
+    );
   } catch (error) {
-    console.error(`[woo-bridge] Could not create a payment page for order ${orderId}:`, error);
+    console.error(`[woo-bridge] Could not create a payment for order ${orderId}:`, error);
     return fail(describeStripeError(error), 502);
   }
 }
